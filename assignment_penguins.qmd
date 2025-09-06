@@ -1,0 +1,119 @@
+---
+title: "Evaluating Classification Model Performance — Penguins"
+author: "Sachi Kapoor"
+format:
+    html:
+      toc: true
+      code-fold: true
+      execute:
+        echo: true
+        message: false
+        warning: false
+---
+        
+## Questions
+1) What is the null error rate of the dataset? 
+2) How do confusion matrix counts (TP, FP, TN, FN) change at thresholds 0.2, 0.5, 0.8?
+3) What are the accuracy, precision, recall, and F1 for each threshold?
+4) Which threshold would you choose and why?
+        
+## Setup
+```{r}
+library(tidyverse)
+library(janitor)
+library(readr)
+library(purrr)
+
+# Load the penguin predictions dataset
+url_csv <- "https://raw.githubusercontent.com/acatlin/data/master/penguin_predictions.csv"
+peng <- read_csv(url_csv, show_col_types = FALSE) |> clean_names()
+
+glimpse(peng)
+```
+
+## 1) Null error rate + distribution plot
+```{r}
+# Majority class
+maj_class <- peng |> count(sex) |> arrange(desc(n)) |> slice(1) |> pull(sex)
+
+# Null error rate
+n_total <- nrow(peng)
+n_maj   <- sum(peng$sex == maj_class)
+null_error_rate <- 1 - (n_maj / n_total)
+maj_class
+null_error_rate
+
+```{r}
+peng |>
+  mutate(
+    sex_clean = tolower(trimws(as.character(sex))),
+    sex_label = case_when(
+      sex_clean %in% c("female","f","1") ~ "Female (1)",
+      sex_clean %in% c("male","m","0")   ~ "Male (0)",
+      TRUE ~ "Unknown"
+    )
+  ) |>
+  ggplot(aes(x = sex_label)) +
+  geom_bar() +
+  labs(title = "Distribution of Actual Class (sex)",
+       x = "Actual Class", y = "Count") +
+  theme_minimal()
+conf_counts <- function(df, thr){
+  df2 <- df |>
+    mutate(
+      actual = case_when(
+        is.numeric(sex) ~ as.integer(sex),
+        tolower(as.character(sex)) %in% c("female","f","1") ~ 1L,
+        tolower(as.character(sex)) %in% c("male","m","0") ~ 0L,
+        TRUE ~ NA_integer_
+      ),
+      pred = if_else(pred_female >= thr, 1L, 0L)
+    )
+
+  df2 |>
+    summarize(
+      TP = sum(pred == 1 & actual == 1, na.rm = TRUE),
+      FP = sum(pred == 1 & actual == 0, na.rm = TRUE),
+      TN = sum(pred == 0 & actual == 0, na.rm = TRUE),
+      FN = sum(pred == 0 & actual == 1, na.rm = TRUE)
+    )
+}
+
+ths <- c(0.2, 0.5, 0.8)
+conf_list <- setNames(lapply(ths, \(t) conf_counts(peng, t)), ths)
+conf_list
+```
+## 3) Accuracy, Precision, Recall, F1
+2 * prec * rec / (prec + rec))
+tibble(accuracy = acc, precision = prec, recall = rec, f1 = f1)
+}
+```{r}
+metrics_from_counts <- function(cc){
+  TP <- cc$TP; FP <- cc$FP; TN <- cc$TN; FN <- cc$FN
+  acc  <- (TP + TN) / (TP + FP + TN + FN)
+  prec <- ifelse(TP + FP == 0, NA_real_, TP / (TP + FP))
+  rec  <- ifelse(TP + FN == 0, NA_real_, TP / (TP + FN))
+  f1   <- ifelse(is.na(prec) | is.na(rec) | (prec + rec) == 0, NA_real_,
+                 2 * prec * rec / (prec + rec))
+  tibble(accuracy = acc, precision = prec, recall = rec, f1 = f1)
+}
+
+metrics_tbl <-
+  tibble(threshold = ths) |>
+  mutate(cc = conf_list) |>
+  mutate(metrics = purrr::map(cc, metrics_from_counts)) |>
+  select(threshold, metrics) |>
+  unnest(metrics)
+
+metrics_tbl
+```
+
+## 4) Threshold choice
+- 0.2 → higher recall, more false positives (good when missing positives is costly).
+- 0.5 → balanced; compare F1 if FP/FN costs are similar.  
+- 0.8 → higher precision, more false negatives (good when false alarms are costly).
+
+## Conclusions
+- Null error rate is the baseline to beat. 
+- Raising the threshold lowers recall and raises precision. 
+- Pick the threshold by the cost of FP vs FN for the use case.
